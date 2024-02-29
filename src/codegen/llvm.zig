@@ -4035,28 +4035,34 @@ pub const Object = struct {
                     const struct_ty = try o.lowerType(ty);
                     if (struct_type.layout == .Packed) {
                         comptime assert(Type.packed_struct_layout_version == 2);
-                        var running_int = try o.builder.intConst(struct_ty, 0);
-                        var running_bits: u16 = 0;
-                        for (struct_type.field_types.get(ip), 0..) |field_ty, field_index| {
-                            if (!Type.fromInterned(field_ty).hasRuntimeBitsIgnoreComptime(mod)) continue;
+                        const bits = ty.bitSize(mod);
+                        const bytes = std.mem.alignForward(u64, bits, 8) / 8;
 
-                            const non_int_val =
-                                try o.lowerValue((try val.fieldValue(mod, field_index)).toIntern());
-                            const ty_bit_size: u16 = @intCast(Type.fromInterned(field_ty).bitSize(mod));
-                            const small_int_ty = try o.builder.intType(ty_bit_size);
-                            const small_int_val = try o.builder.castConst(
-                                if (Type.fromInterned(field_ty).isPtrAtRuntime(mod)) .ptrtoint else .bitcast,
-                                non_int_val,
-                                small_int_ty,
-                            );
-                            const shift_rhs = try o.builder.intConst(struct_ty, running_bits);
-                            const extended_int_val =
-                                try o.builder.convConst(.unsigned, small_int_val, struct_ty);
-                            const shifted = try o.builder.binConst(.shl, extended_int_val, shift_rhs);
-                            running_int = try o.builder.binConst(.@"or", running_int, shifted);
-                            running_bits += ty_bit_size;
-                        }
-                        return running_int;
+                        var stack = std.heap.stackFallback(32, o.gpa);
+                        const allocator = stack.get();
+
+                        const limbs = try allocator.alloc(
+                            std.math.big.Limb,
+                            @intCast(std.mem.alignForward(u64, bytes, @sizeOf(std.math.big.Limb)) /
+                                @sizeOf(std.math.big.Limb)),
+                        );
+                        defer allocator.free(limbs);
+                        @memset(limbs, 0);
+
+                        val.writeToPackedMemory(
+                            ty,
+                            mod,
+                            std.mem.sliceAsBytes(limbs)[0..bytes],
+                            0,
+                        ) catch unreachable;
+
+                        if (target.cpu.arch.endian() == .big)
+                            std.mem.reverse(u8, std.mem.sliceAsBytes(limbs)[0..bytes]);
+
+                        return o.builder.bigIntConst(struct_ty, .{
+                            .limbs = limbs,
+                            .positive = true,
+                        });
                     }
                     const llvm_len = struct_ty.aggregateLen(&o.builder);
 
@@ -4151,12 +4157,34 @@ pub const Object = struct {
                     const field_ty = Type.fromInterned(union_obj.field_types.get(ip)[field_index]);
                     if (container_layout == .Packed) {
                         if (!field_ty.hasRuntimeBits(mod)) return o.builder.intConst(union_ty, 0);
-                        const small_int_val = try o.builder.castConst(
-                            if (field_ty.isPtrAtRuntime(mod)) .ptrtoint else .bitcast,
-                            try o.lowerValue(un.val),
-                            try o.builder.intType(@intCast(field_ty.bitSize(mod))),
+                        const bits = ty.bitSize(mod);
+                        const bytes = std.mem.alignForward(u64, bits, 8) / 8;
+
+                        var stack = std.heap.stackFallback(32, o.gpa);
+                        const allocator = stack.get();
+
+                        const limbs = try allocator.alloc(
+                            std.math.big.Limb,
+                            @intCast(std.mem.alignForward(u64, bytes, @sizeOf(std.math.big.Limb)) /
+                                @sizeOf(std.math.big.Limb)),
                         );
-                        return o.builder.convConst(.unsigned, small_int_val, union_ty);
+                        defer allocator.free(limbs);
+                        @memset(limbs, 0);
+
+                        val.writeToPackedMemory(
+                            ty,
+                            mod,
+                            std.mem.sliceAsBytes(limbs)[0..bytes],
+                            0,
+                        ) catch unreachable;
+
+                        if (target.cpu.arch.endian() == .big)
+                            std.mem.reverse(u8, std.mem.sliceAsBytes(limbs)[0..bytes]);
+
+                        return o.builder.bigIntConst(union_ty, .{
+                            .limbs = limbs,
+                            .positive = true,
+                        });
                     }
 
                     // Sometimes we must make an unnamed struct because LLVM does
@@ -4186,12 +4214,34 @@ pub const Object = struct {
                     assert(layout.tag_size == 0);
                     const union_val = try o.lowerValue(un.val);
                     if (container_layout == .Packed) {
-                        const bitcast_val = try o.builder.castConst(
-                            .bitcast,
-                            union_val,
-                            try o.builder.intType(@intCast(ty.bitSize(mod))),
+                        const bits = ty.bitSize(mod);
+                        const bytes = std.mem.alignForward(u64, bits, 8) / 8;
+
+                        var stack = std.heap.stackFallback(32, o.gpa);
+                        const allocator = stack.get();
+
+                        const limbs = try allocator.alloc(
+                            std.math.big.Limb,
+                            @intCast(std.mem.alignForward(u64, bytes, @sizeOf(std.math.big.Limb)) /
+                                @sizeOf(std.math.big.Limb)),
                         );
-                        return o.builder.convConst(.unsigned, bitcast_val, union_ty);
+                        defer allocator.free(limbs);
+                        @memset(limbs, 0);
+
+                        val.writeToPackedMemory(
+                            ty,
+                            mod,
+                            std.mem.sliceAsBytes(limbs)[0..bytes],
+                            0,
+                        ) catch unreachable;
+
+                        if (target.cpu.arch.endian() == .big)
+                            std.mem.reverse(u8, std.mem.sliceAsBytes(limbs)[0..bytes]);
+
+                        return o.builder.bigIntConst(union_ty, .{
+                            .limbs = limbs,
+                            .positive = true,
+                        });
                     }
 
                     need_unnamed = true;
@@ -4414,15 +4464,11 @@ pub const Object = struct {
         const llvm_global = (try o.resolveGlobalAnonDecl(decl_val, llvm_addr_space, alignment)).ptrConst(&o.builder).global;
 
         const llvm_val = try o.builder.convConst(
-            .unneeded,
             llvm_global.toConst(),
             try o.builder.ptrType(llvm_addr_space),
         );
 
-        return o.builder.convConst(if (ptr_ty.isAbiInt(mod)) switch (ptr_ty.intInfo(mod).signedness) {
-            .signed => .signed,
-            .unsigned => .unsigned,
-        } else .unneeded, llvm_val, try o.lowerType(ptr_ty));
+        return o.builder.convConst(llvm_val, try o.lowerType(ptr_ty));
     }
 
     fn lowerDeclRefValue(o: *Object, ty: Type, decl_index: InternPool.DeclIndex) Allocator.Error!Builder.Constant {
@@ -4456,15 +4502,11 @@ pub const Object = struct {
             (try o.resolveGlobalDecl(decl_index)).ptrConst(&o.builder).global;
 
         const llvm_val = try o.builder.convConst(
-            .unneeded,
             llvm_global.toConst(),
             try o.builder.ptrType(toLlvmAddressSpace(decl.@"addrspace", mod.getTarget())),
         );
 
-        return o.builder.convConst(if (ty.isAbiInt(mod)) switch (ty.intInfo(mod).signedness) {
-            .signed => .signed,
-            .unsigned => .unsigned,
-        } else .unneeded, llvm_val, try o.lowerType(ty));
+        return o.builder.convConst(llvm_val, try o.lowerType(ty));
     }
 
     fn lowerPtrToVoid(o: *Object, ptr_ty: Type) Allocator.Error!Builder.Constant {
@@ -4856,7 +4898,6 @@ pub const FuncGen = struct {
         variable_index.setUnnamedAddr(.unnamed_addr, &o.builder);
         variable_index.setAlignment(tv.ty.abiAlignment(mod).toLlvm(), &o.builder);
         return o.builder.convConst(
-            .unneeded,
             variable_index.toConst(&o.builder),
             try o.builder.ptrType(toLlvmAddressSpace(.generic, target)),
         );
@@ -10516,9 +10557,9 @@ pub const FuncGen = struct {
 
         const anded = if (workaround_explicit_mask and payload_llvm_ty != load_llvm_ty) blk: {
             // this is rendundant with llvm.trunc. But without it, llvm17 emits invalid code for powerpc.
-            var mask_val = try o.builder.intConst(payload_llvm_ty, -1);
-            mask_val = try o.builder.castConst(.zext, mask_val, load_llvm_ty);
-            break :blk try fg.wip.bin(.@"and", shifted, mask_val.toValue(), "");
+            const mask_val = try o.builder.intValue(payload_llvm_ty, -1);
+            const zext_mask_val = try fg.wip.cast(.zext, mask_val, load_llvm_ty, "");
+            break :blk try fg.wip.bin(.@"and", shifted, zext_mask_val, "");
         } else shifted;
 
         return fg.wip.conv(.unneeded, anded, payload_llvm_ty, "");
@@ -10666,14 +10707,23 @@ pub const FuncGen = struct {
             else
                 try self.wip.cast(.bitcast, elem, value_bits_type, "");
 
-            var mask_val = try o.builder.intConst(value_bits_type, -1);
-            mask_val = try o.builder.castConst(.zext, mask_val, containing_int_ty);
-            mask_val = try o.builder.binConst(.shl, mask_val, shift_amt);
-            mask_val =
-                try o.builder.binConst(.xor, mask_val, try o.builder.intConst(containing_int_ty, -1));
+            const mask_val = blk: {
+                const zext = try self.wip.cast(
+                    .zext,
+                    try o.builder.intValue(value_bits_type, -1),
+                    containing_int_ty,
+                    "",
+                );
+                const shl = try self.wip.bin(.shl, zext, shift_amt.toValue(), "");
+                break :blk try self.wip.bin(
+                    .xor,
+                    shl,
+                    try o.builder.intValue(containing_int_ty, -1),
+                    "",
+                );
+            };
 
-            const anded_containing_int =
-                try self.wip.bin(.@"and", containing_int, mask_val.toValue(), "");
+            const anded_containing_int = try self.wip.bin(.@"and", containing_int, mask_val, "");
             const extended_value = try self.wip.cast(.zext, value_bits, containing_int_ty, "");
             const shifted_value = try self.wip.bin(.shl, extended_value, shift_amt.toValue(), "");
             const ored_value = try self.wip.bin(.@"or", shifted_value, anded_containing_int, "");
