@@ -974,6 +974,7 @@ const llvm_targets = [_]LlvmTarget{
             "icelake_client",
             "icelake_server",
             "graniterapids_d",
+            "arrowlake_s",
         },
     },
     .{

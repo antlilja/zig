@@ -13,6 +13,7 @@ pub const Feature = enum {
     aclass,
     acquire_release,
     aes,
+    armv9_5_a,
     atomics_32,
     avoid_movs_shop,
     avoid_partial_cpsr,
@@ -186,6 +187,7 @@ pub const Feature = enum {
     v9_2a,
     v9_3a,
     v9_4a,
+    v9_5a,
     v9a,
     vfp2,
     vfp2sp,
@@ -258,6 +260,22 @@ pub const all_features = blk: {
         .description = "Enable AES support",
         .dependencies = featureSet(&[_]Feature{
             .neon,
+        }),
+    };
+    result[@intFromEnum(Feature.armv9_5_a)] = .{
+        .llvm_name = "armv9.5-a",
+        .description = "ARMv95a architecture",
+        .dependencies = featureSet(&[_]Feature{
+            .aclass,
+            .crc,
+            .db,
+            .dsp,
+            .fp_armv8,
+            .mp,
+            .ras,
+            .trustzone,
+            .v9_5a,
+            .virtualization,
         }),
     };
     result[@intFromEnum(Feature.atomics_32)] = .{
@@ -1572,6 +1590,13 @@ pub const all_features = blk: {
             .virtualization,
         }),
     };
+    result[@intFromEnum(Feature.v9_5a)] = .{
+        .llvm_name = "v9.5a",
+        .description = "Support ARM v9.5a instructions",
+        .dependencies = featureSet(&[_]Feature{
+            .has_v9_4a,
+        }),
+    };
     result[@intFromEnum(Feature.v9a)] = .{
         .llvm_name = "armv9-a",
         .description = "ARMv9a architecture",
@@ -2238,6 +2263,21 @@ pub const cpu = struct {
             .v7em,
         }),
     };
+    pub const cortex_m52 = CpuModel{
+        .name = "cortex_m52",
+        .llvm_name = "cortex-m52",
+        .features = featureSet(&[_]Feature{
+            .fp_armv8d16,
+            .loop_align,
+            .mve1beat,
+            .mve_fp,
+            .no_branch_predictor,
+            .pacbti,
+            .slowfpvmlx,
+            .use_misched,
+            .v8_1m_main,
+        }),
+    };
     pub const cortex_m55 = CpuModel{
         .name = "cortex_m55",
         .llvm_name = "cortex-m55",
@@ -2499,7 +2539,7 @@ pub const cpu = struct {
         .features = featureSet(&[_]Feature{
             .bf16,
             .i8mm,
-            .v8_5a,
+            .v9a,
         }),
     };
     pub const neoverse_v1 = CpuModel{
